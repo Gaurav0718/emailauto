@@ -1,0 +1,16 @@
+# One-click deploy on Render (https://render.com). Import the repo, or use
+# "New > Blueprint" pointing at this file. Free tier allows outbound SMTP.
+services:
+  - type: web
+    name: emailauto-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: CORS_ORIGINS
+        sync: false          # set to your Cloudflare Pages URL, e.g. https://emailauto.pages.dev
+      - key: MAX_UPLOAD_MB
+        value: "25"
+      - key: FLASK_DEBUG
+        value: "0"
