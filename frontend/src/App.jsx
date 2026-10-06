@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 
-// In dev this is empty and the Vite proxy forwards /api to the backend.
-// In production (Cloudflare Pages) set VITE_API_BASE to the backend URL.
-const API = (import.meta.env.VITE_API_BASE || "").replace(/\/$/, "");
+// Functions live at the same origin as the site (Cloudflare Pages Functions),
+// so no backend URL/CORS config is needed — this stays empty.
+const API = "";
 
 const DEFAULTS = {
   sender: "nudge-app@indegene.com",
@@ -16,8 +16,6 @@ export default function App() {
   const [sender, setSender] = useState(DEFAULTS.sender);
   const [subject, setSubject] = useState(DEFAULTS.subject);
   const [tagline, setTagline] = useState("");
-  const [smtpUser, setSmtpUser] = useState(DEFAULTS.sender);
-  const [smtpPass, setSmtpPass] = useState("");
 
   const [changes, setChanges] = useState([]);
   const [transformedHtml, setTransformedHtml] = useState("");
@@ -28,64 +26,23 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null); // {type, text}
   const [health, setHealth] = useState(null);
-
-  // Backend wake state. On a sleeping host (e.g. Render free tier) the first
-  // request can take ~50s while the server cold-starts, so we poll /api/health
-  // and show a live timer until it answers.
-  const [backendStatus, setBackendStatus] = useState("connecting"); // connecting | ready | error
-  const [wakeSeconds, setWakeSeconds] = useState(0);
-  const [pingNonce, setPingNonce] = useState(0);
+  const [healthError, setHealthError] = useState(null);
 
   const iframeRef = useRef(null);
 
-  // Poll the backend until it responds (cold start friendly).
   useEffect(() => {
-    let cancelled = false;
-    const startedAt = Date.now();
-    const MAX_WAIT_MS = 120000; // give up after 2 min
-
-    setBackendStatus("connecting");
-    setWakeSeconds(0);
-
-    const tick = setInterval(() => {
-      if (cancelled) return;
-      const elapsed = Date.now() - startedAt;
-      setWakeSeconds(Math.floor(Math.min(elapsed, MAX_WAIT_MS) / 1000));
-    }, 1000);
-
-    async function poll() {
-      while (!cancelled) {
-        try {
-          const r = await fetch(`${API}/api/health`, { cache: "no-store" });
-          if (r.ok) {
-            const data = await r.json();
-            if (!cancelled) {
-              setHealth(data);
-              setBackendStatus("ready");
-              clearInterval(tick); // stop the timer once settled
-            }
-            return;
-          }
-        } catch (_) {
-          // backend still waking or unreachable — keep trying
+    fetch(`${API}/api/health`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        setHealth(data);
+        if (!data.resend_configured) {
+          setHealthError(
+            "RESEND_API_KEY is not set on this deployment. Add it as a Pages secret before sending."
+          );
         }
-        if (Date.now() - startedAt > MAX_WAIT_MS) {
-          if (!cancelled) {
-            setBackendStatus("error");
-            clearInterval(tick); // stop the timer once settled
-          }
-          return;
-        }
-        await new Promise((res) => setTimeout(res, 2500));
-      }
-    }
-    poll();
-
-    return () => {
-      cancelled = true;
-      clearInterval(tick);
-    };
-  }, [pingNonce]);
+      })
+      .catch(() => setHealthError("Could not reach the API functions. Check the deployment."));
+  }, []);
 
   // Re-analyze whenever the HTML or Excel changes.
   useEffect(() => {
@@ -137,10 +94,6 @@ export default function App() {
 
   async function doSend(mode) {
     if (!htmlFile) return;
-    if (!smtpPass) {
-      setMessage({ type: "err", text: "Enter the SMTP app password first." });
-      return;
-    }
     if (mode === "real") {
       const total = recipients?.total || 0;
       const ok = window.confirm(
@@ -156,8 +109,6 @@ export default function App() {
     form.append("subject", subject);
     form.append("sender", sender);
     if (tagline.trim()) form.append("tagline", tagline.trim());
-    form.append("smtp_user", smtpUser);
-    form.append("smtp_pass", smtpPass);
 
     setBusy(true);
     setMessage({ type: "info", text: mode === "test" ? "Sending test run..." : "Sending..." });
@@ -183,9 +134,9 @@ export default function App() {
     }
   }
 
-  const ready = backendStatus === "ready";
-  const canTest = ready && !!htmlFile && !!smtpPass && !busy;
-  const canSend = ready && !!htmlFile && !!excelFile && !!smtpPass && !busy && (recipients?.total || 0) > 0;
+  const ready = !!health && health.resend_configured && !busy;
+  const canTest = ready && !!htmlFile;
+  const canSend = ready && !!htmlFile && !!excelFile && (recipients?.total || 0) > 0;
 
   return (
     <div className="app">
@@ -196,11 +147,12 @@ export default function App() {
         hand-sent versions.
       </p>
 
-      <BackendStatus
-        status={backendStatus}
-        seconds={wakeSeconds}
-        onRetry={() => setPingNonce((n) => n + 1)}
-      />
+      {healthError && <div className="msg err" style={{ marginBottom: 18 }}>{healthError}</div>}
+      {health && health.resend_configured && (
+        <div className="backend-status ready">
+          <span className="dot" /> Connected — sending via Resend
+        </div>
+      )}
 
       <div className="grid">
         {/* ---- Left column: controls ---- */}
@@ -248,7 +200,7 @@ export default function App() {
           </div>
 
           <div className="card">
-            <h2>3. Message + SMTP</h2>
+            <h2>3. Message</h2>
             <label>Portfolio tagline (optional)</label>
             <input
               type="text"
@@ -264,19 +216,8 @@ export default function App() {
             <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)} />
             <label>From (sender)</label>
             <input type="text" value={sender} onChange={(e) => setSender(e.target.value)} />
-            <label>SMTP username</label>
-            <input type="text" value={smtpUser} onChange={(e) => setSmtpUser(e.target.value)} />
-            <label>SMTP app password</label>
-            <input
-              type="password"
-              value={smtpPass}
-              placeholder="Office365 app password"
-              onChange={(e) => setSmtpPass(e.target.value)}
-              autoComplete="off"
-            />
             <p className="hint">
-              Not stored — used only for this send. Office365 needs SMTP AUTH
-              enabled + an app password if MFA is on.
+              Must be an address on a domain verified in your Resend account.
             </p>
           </div>
 
@@ -284,9 +225,7 @@ export default function App() {
             <h2>4. Send</h2>
             <button className="btn btn-test" disabled={!canTest} onClick={() => doSend("test")}>
               Test Run
-              {health?.default_test_list && (
-                <span className="count-badge">→ {health.default_test_list}</span>
-              )}
+              <span className="count-badge">→ default test list</span>
             </button>
             <p className="hint">Sends to the default test list, regardless of the uploaded sheet.</p>
 
@@ -333,39 +272,6 @@ export default function App() {
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function BackendStatus({ status, seconds, onRetry }) {
-  if (status === "ready") {
-    return (
-      <div className="backend-status ready">
-        <span className="dot" /> Backend connected
-      </div>
-    );
-  }
-  if (status === "error") {
-    return (
-      <div className="backend-status error">
-        <span className="dot" /> Backend didn&apos;t respond after {seconds}s.
-        <button onClick={onRetry}>Retry</button>
-      </div>
-    );
-  }
-  // connecting
-  const slow = seconds >= 5;
-  return (
-    <div className="backend-status connecting">
-      <span className="spinner" />
-      {slow ? (
-        <span>
-          Waking the backend… <strong>{seconds}s</strong>
-          <span className="sub"> (a sleeping server can take ~50s on the first request)</span>
-        </span>
-      ) : (
-        <span>Connecting to backend… <strong>{seconds}s</strong></span>
-      )}
     </div>
   );
 }
