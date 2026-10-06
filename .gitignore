@@ -12,3 +12,5 @@ frontend/.env.production
 node_modules/
 __pycache__/
 .DS_Store
+
+.wrangler/
