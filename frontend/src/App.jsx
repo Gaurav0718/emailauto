@@ -48,7 +48,9 @@ export default function App() {
     setWakeSeconds(0);
 
     const tick = setInterval(() => {
-      if (!cancelled) setWakeSeconds(Math.floor((Date.now() - startedAt) / 1000));
+      if (cancelled) return;
+      const elapsed = Date.now() - startedAt;
+      setWakeSeconds(Math.floor(Math.min(elapsed, MAX_WAIT_MS) / 1000));
     }, 1000);
 
     async function poll() {
@@ -60,6 +62,7 @@ export default function App() {
             if (!cancelled) {
               setHealth(data);
               setBackendStatus("ready");
+              clearInterval(tick); // stop the timer once settled
             }
             return;
           }
@@ -67,7 +70,10 @@ export default function App() {
           // backend still waking or unreachable — keep trying
         }
         if (Date.now() - startedAt > MAX_WAIT_MS) {
-          if (!cancelled) setBackendStatus("error");
+          if (!cancelled) {
+            setBackendStatus("error");
+            clearInterval(tick); // stop the timer once settled
+          }
           return;
         }
         await new Promise((res) => setTimeout(res, 2500));
