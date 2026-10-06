@@ -225,10 +225,21 @@ export function summarize(buckets) {
 }
 
 // =========================================================================
-// 3. Sending (via Resend HTTP API)
+// 3. Sending — raw SMTP to Office365 via Cloudflare's TCP Sockets API
+// (worker-mailer), so no third-party email API or account is involved.
 // =========================================================================
 
-export async function sendEmail({ html, buckets, subject, sender, resendApiKey }) {
+export const SMTP_HOST = "smtp.office365.com";
+export const SMTP_PORT = 587;
+
+export async function sendEmail({
+  html,
+  buckets,
+  subject,
+  sender,
+  smtpUser,
+  smtpPass,
+}) {
   const allRecipients = [...buckets.to, ...buckets.cc, ...buckets.bcc];
   if (allRecipients.length === 0) {
     throw new Error("No valid recipients found.");
@@ -236,31 +247,42 @@ export async function sendEmail({ html, buckets, subject, sender, resendApiKey }
   if (buckets.to.length === 0) {
     throw new Error("Sheet has no 'to' recipient. At least one is required.");
   }
+  if (!smtpUser || !smtpPass) {
+    throw new Error("SMTP username and app password are required to send.");
+  }
 
-  const body = {
-    from: sender,
-    to: buckets.to,
-    subject,
-    html,
-    text: "This message is best viewed in an HTML-capable email client.",
-  };
-  if (buckets.cc.length) body.cc = buckets.cc;
-  if (buckets.bcc.length) body.bcc = buckets.bcc;
+  // Dynamic import: `worker-mailer` touches `cloudflare:sockets`, which
+  // only exists in the Workers runtime, not in Vite's build/SSR probing.
+  const { WorkerMailer } = await import("worker-mailer");
 
-  const r = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${resendApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!r.ok) {
-    const errBody = await r.json().catch(() => ({}));
-    const err = new Error(errBody.message || `Resend API error (${r.status})`);
-    err.status = r.status;
+  let mailer;
+  try {
+    mailer = await WorkerMailer.connect({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: false,
+      startTls: true,
+      credentials: { username: smtpUser, password: smtpPass },
+      authType: "login",
+    });
+  } catch (e) {
+    const err = new Error(`Could not connect/authenticate to ${SMTP_HOST}: ${e.message}`);
+    err.status = 401;
     throw err;
+  }
+
+  try {
+    await mailer.send({
+      from: sender,
+      to: buckets.to,
+      cc: buckets.cc.length ? buckets.cc : undefined,
+      bcc: buckets.bcc.length ? buckets.bcc : undefined,
+      subject,
+      html,
+      text: "This message is best viewed in an HTML-capable email client.",
+    });
+  } finally {
+    await mailer.close();
   }
 
   return allRecipients;

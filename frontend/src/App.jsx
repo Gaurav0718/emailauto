@@ -16,6 +16,8 @@ export default function App() {
   const [sender, setSender] = useState(DEFAULTS.sender);
   const [subject, setSubject] = useState(DEFAULTS.subject);
   const [tagline, setTagline] = useState("");
+  const [smtpUser, setSmtpUser] = useState(DEFAULTS.sender);
+  const [smtpPass, setSmtpPass] = useState("");
 
   const [changes, setChanges] = useState([]);
   const [transformedHtml, setTransformedHtml] = useState("");
@@ -33,15 +35,8 @@ export default function App() {
   useEffect(() => {
     fetch(`${API}/api/health`, { cache: "no-store" })
       .then((r) => r.json())
-      .then((data) => {
-        setHealth(data);
-        if (!data.resend_configured) {
-          setHealthError(
-            "RESEND_API_KEY is not set on this deployment. Add it as a Pages secret before sending."
-          );
-        }
-      })
-      .catch(() => setHealthError("Could not reach the API functions. Check the deployment."));
+      .then((data) => setHealth(data))
+      .catch(() => setHealthError("Could not reach the API Worker. Check the deployment."));
   }, []);
 
   // Re-analyze whenever the HTML or Excel changes.
@@ -94,6 +89,10 @@ export default function App() {
 
   async function doSend(mode) {
     if (!htmlFile) return;
+    if (!smtpPass) {
+      setMessage({ type: "err", text: "Enter the SMTP app password first." });
+      return;
+    }
     if (mode === "real") {
       const total = recipients?.total || 0;
       const ok = window.confirm(
@@ -109,6 +108,8 @@ export default function App() {
     form.append("subject", subject);
     form.append("sender", sender);
     if (tagline.trim()) form.append("tagline", tagline.trim());
+    form.append("smtp_user", smtpUser);
+    form.append("smtp_pass", smtpPass);
 
     setBusy(true);
     setMessage({ type: "info", text: mode === "test" ? "Sending test run..." : "Sending..." });
@@ -134,9 +135,9 @@ export default function App() {
     }
   }
 
-  const ready = !!health && health.resend_configured && !busy;
-  const canTest = ready && !!htmlFile;
-  const canSend = ready && !!htmlFile && !!excelFile && (recipients?.total || 0) > 0;
+  const ready = !!health && !busy;
+  const canTest = ready && !!htmlFile && !!smtpPass;
+  const canSend = ready && !!htmlFile && !!excelFile && !!smtpPass && (recipients?.total || 0) > 0;
 
   return (
     <div className="app">
@@ -148,9 +149,9 @@ export default function App() {
       </p>
 
       {healthError && <div className="msg err" style={{ marginBottom: 18 }}>{healthError}</div>}
-      {health && health.resend_configured && (
+      {health && (
         <div className="backend-status ready">
-          <span className="dot" /> Connected — sending via Resend
+          <span className="dot" /> Connected — sending via {health.smtp_host}
         </div>
       )}
 
@@ -216,8 +217,19 @@ export default function App() {
             <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)} />
             <label>From (sender)</label>
             <input type="text" value={sender} onChange={(e) => setSender(e.target.value)} />
+            <label>SMTP username</label>
+            <input type="text" value={smtpUser} onChange={(e) => setSmtpUser(e.target.value)} />
+            <label>SMTP app password</label>
+            <input
+              type="password"
+              value={smtpPass}
+              placeholder="Office365 app password"
+              onChange={(e) => setSmtpPass(e.target.value)}
+              autoComplete="off"
+            />
             <p className="hint">
-              Must be an address on a domain verified in your Resend account.
+              Not stored — used only for this send. Office365 needs SMTP AUTH
+              enabled + an app password if MFA is on.
             </p>
           </div>
 

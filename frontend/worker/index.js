@@ -13,6 +13,8 @@ import {
   sendEmail,
   DEFAULT_SENDER,
   DEFAULT_SUBJECT,
+  SMTP_HOST,
+  SMTP_PORT,
 } from "./_lib/emailService.js";
 import defaultTestRows from "./_lib/defaultTestList.json";
 
@@ -23,14 +25,15 @@ function json(data, status = 200) {
   });
 }
 
-async function handleHealth(env) {
+async function handleHealth() {
   return json({
     status: "ok",
     sender: DEFAULT_SENDER,
     subject: DEFAULT_SUBJECT,
-    send_provider: "resend",
+    send_provider: "smtp",
+    smtp_host: SMTP_HOST,
+    smtp_port: SMTP_PORT,
     default_test_list_exists: true,
-    resend_configured: !!env.RESEND_API_KEY,
   });
 }
 
@@ -66,7 +69,7 @@ async function handleAnalyze(request) {
   });
 }
 
-async function handleSend(request, env) {
+async function handleSend(request) {
   const form = await request.formData();
   const htmlFile = form.get("html");
   if (!htmlFile) {
@@ -76,9 +79,11 @@ async function handleSend(request, env) {
   const mode = (form.get("mode") || "test").toLowerCase();
   const subject = form.get("subject") || DEFAULT_SUBJECT;
   const sender = form.get("sender") || DEFAULT_SENDER;
+  const smtpUser = form.get("smtp_user") || sender;
+  const smtpPass = form.get("smtp_pass") || "";
 
-  if (!env.RESEND_API_KEY) {
-    return json({ error: "RESEND_API_KEY is not configured on the server." }, 500);
+  if (!smtpPass) {
+    return json({ error: "SMTP app password is required to send." }, 400);
   }
 
   const htmlIn = await htmlFile.text();
@@ -108,7 +113,8 @@ async function handleSend(request, env) {
       buckets,
       subject,
       sender,
-      resendApiKey: env.RESEND_API_KEY,
+      smtpUser,
+      smtpPass,
     });
   } catch (e) {
     const status = e.status === 401 || e.status === 403 ? 401 : 502;
@@ -132,13 +138,13 @@ export default {
 
     try {
       if (url.pathname === "/api/health" && request.method === "GET") {
-        return await handleHealth(env);
+        return await handleHealth();
       }
       if (url.pathname === "/api/analyze" && request.method === "POST") {
         return await handleAnalyze(request);
       }
       if (url.pathname === "/api/send" && request.method === "POST") {
-        return await handleSend(request, env);
+        return await handleSend(request);
       }
     } catch (e) {
       return json({ error: `Unexpected server error: ${e.message}` }, 500);
